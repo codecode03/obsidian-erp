@@ -1025,17 +1025,61 @@ const TD = (i, n) => `${i === 0 ? 'pl-4 pr-2' : i === n - 1 ? 'pr-4 pl-3' : 'px-
 const ICON_BTN = 'w-7 h-7 rounded border border-side-border flex items-center justify-center text-muted hover:text-side-accent hover:bg-side-hover';
 const ICON_BTN_DEL = 'w-7 h-7 rounded border border-side-border flex items-center justify-center text-muted hover:text-danger hover:bg-dangerSoft';
 
+/* Plan 10 list toolbar icons */
+icons.filter = 'M3 5h18l-7 8v6l-4 2v-8L3 5z';
+icons.columns = 'M4 4h16v16H4zM9.5 4v16M14.5 4v16';
+icons.printer = 'M6 9V3h12v6M6 18H4a1 1 0 01-1-1v-6a2 2 0 012-2h14a2 2 0 012 2v6a1 1 0 01-1 1h-2M7 14h10v7H7z';
+icons.download = 'M12 4v11M7 10l5 5 5-5M4 20h16';
+icons.trash = 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3';
+/* Plan 10 shared helpers for list pages: a cell's main text and its sub-notes (subNote = span.block), and the A4 list print */
+const cellParts = html => { const d = document.createElement('div'); d.innerHTML = html; const sp = t => t.replace(/\s+/g, ' ').trim(); const subs = [...d.querySelectorAll('.block')].map(e => { const t = sp(e.textContent); e.remove(); return t; }).filter(Boolean); return [sp(d.textContent), subs]; };
+const cellFlat = html => { const [a, b] = cellParts(html); return [a, ...b].join(' · '); };
+/* o = { title, noun, filters:[text], cols:[{ l, num }], rows:[[cellHtml]] } */
+function openListPrint(o) {
+  const per = 24, coName = co.name || 'Your Company', n = o.rows.length, pl = `${n} ${o.noun}${n === 1 ? '' : 's'}`;
+  const th = `<tr>${o.cols.map(x => `<th style="text-align:${x.num ? 'right' : 'left'};padding:6px;border-bottom:1.5px solid ${PAPER.ink};font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:${PAPER.soft}">${escapeHtml(x.l)}</th>`).join('')}</tr>`;
+  const pages = []; for (let i = 0; i < Math.max(n, 1); i += per) pages.push(o.rows.slice(i, i + per));
+  const sheets = pages.map((pg, pi) => a4Sheet(`
+    ${pi === 0 ? `<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid ${PAPER.accent};padding-bottom:10px;margin-bottom:12px"><div><div style="font-size:11px;color:${PAPER.muted}">${escapeHtml(coName)}</div><div style="font-size:20px;font-weight:700">${escapeHtml(o.title)}</div><div style="font-size:11px;color:${PAPER.muted};margin-top:2px">${escapeHtml(o.filters.length ? o.filters.join(' · ') : 'All records')}</div></div><div style="text-align:right;font-size:11px;color:${PAPER.muted}">Printed ${escapeHtml(today())}<br><b style="color:${PAPER.ink}">${escapeHtml(pl)}</b></div></div>` : ''}
+    <table style="width:100%;border-collapse:collapse;font-size:10.5px"><thead>${th}</thead><tbody>${pg.map(r => `<tr>${r.map((h, i) => `<td style="text-align:${o.cols[i].num ? 'right' : 'left'};padding:5px 6px;border-bottom:1px solid ${PAPER.line};vertical-align:top${o.cols[i].num ? ';white-space:nowrap' : ''}">${(([a, b]) => escapeHtml(a) + b.map(t => `<div style="font-size:9.5px;color:${PAPER.muted};margin-top:1px">${escapeHtml(t)}</div>`).join(''))(cellParts(h))}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${o.cols.length}" style="padding:24px;text-align:center;color:${PAPER.muted}">No records match.</td></tr>`}</tbody></table>
+    <div style="margin-top:10px;font-size:10px;color:${PAPER.muted};text-align:right">Page ${pi + 1} of ${pages.length}</div>`));
+  openDocViewer({ title:`${o.title} · list`, sub:pl, sheets:sheets.join('') });
+}
 function makeModule(c) {
   if (!Array.isArray(DATA[c.key])) DATA[c.key] = [];
   let q = '', flt = '', view = null;
   const sel = new Set();
+  /* Plan 10 toolbar state (in memory): F = { fieldKey: Set(values) }, hide = hidden column labels */
+  let F = {};
+  const hide = new Set();
+  const TB = !!c.toolbar, canSel = () => !!(c.selectable || (TB && c.bulkDelete));
+  const colToggle = () => TB && !c.noColumns && c.columns.length >= 8;
+  const shownCols = () => c.columns.filter(x => !x.l || !hide.has(x.l));
+  const fGroups = () => {
+    if (!TB) return [];
+    const g = [{ k:'status', l:'Status', o:c.statusList }];
+    (c.filterKeys || []).forEach(k => { const f = c.fields.find(x => x.k === k); if (f && k !== 'status') g.push({ k, l:f.l, o:Array.isArray(f.o) ? f.o : null }); });
+    return g;
+  };
+  const fCount = () => Object.values(F).reduce((s, v) => s + v.size, 0);
+  const active = () => !!(q.trim() || fCount() || hide.size);
   const m = {
     c, sel,
     nextCode() { return nextCode(c.prefix, DATA[c.key]); },
     vis() { return c.scope ? DATA[c.key].filter(c.scope) : DATA[c.key]; },
+    /* rows after sort, search and filters: used by the table, Print and Export CSV */
+    list() {
+      let list = [...m.vis()].sort(c.sortFn || ((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+      if (flt) list = list.filter(r => r.status === flt);
+      Object.keys(F).forEach(k => { const s = F[k]; if (s.size) list = list.filter(r => s.has(String(r[k] ?? ''))); });
+      const t = q.trim().toLowerCase();
+      if (t) list = list.filter(r => (plain(c.columns.filter(x => x.l).map(x => x.v(r)).join(' ')) + ' ' + (r.notes || '') + ' ' + (r.remarks || '') + ' ' + (c.searchExtra ? c.searchExtra(r) : '')).toLowerCase().includes(t));
+      return list;
+    },
     render(container) {
       if (container) view = container;
       if (!view || !document.body.contains(view)) return;
+      if (TB) return m.renderTB();
       const actions = document.getElementById('page-actions');
       if (actions) actions.innerHTML = `${typeof c.extra === 'function' ? c.extra() : (c.extra || '')}
         <button type="button" class="${UI_BTN}" data-a="export">Export CSV</button>
@@ -1076,18 +1120,17 @@ function makeModule(c) {
     rows() {
       if (!view) return;
       const tb = view.querySelector('[data-rows]'); if (!tb) return;
-      if (c.selectable) { const ids = new Set(m.vis().map(r => r.id)); [...sel].forEach(i => { if (!ids.has(i)) sel.delete(i); }); }
-      let list = [...m.vis()].sort(c.sortFn || ((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-      if (flt) list = list.filter(r => r.status === flt);
-      const t = q.trim().toLowerCase();
-      if (t) list = list.filter(r => (plain(c.columns.filter(x => x.l).map(x => x.v(r)).join(' ')) + ' ' + (r.notes || '') + ' ' + (r.remarks || '') + ' ' + (c.searchExtra ? c.searchExtra(r) : '')).toLowerCase().includes(t));
-      const n = c.columns.length + 1 + (c.selectable ? 1 : 0);
-      const cnt = view.querySelector('[data-count]'), total = m.vis().length;
-      if (cnt) cnt.textContent = list.length === total ? `${total} ${c.noun}${total === 1 ? '' : 's'}` : `Showing ${list.length} of ${total} ${c.noun}s`;
+      const S = canSel(), cols = TB ? shownCols() : c.columns;
+      const list = m.list();
+      /* toolbar pages: a row hidden by search or filters leaves the selection, so Delete selected never touches rows you cannot see */
+      if (S) { const ids = new Set((TB ? list : m.vis()).map(r => r.id)); [...sel].forEach(i => { if (!ids.has(i)) sel.delete(i); }); }
+      const n = cols.length + 1 + (S ? 1 : 0);
+      const cnt = view.querySelector('[data-count]'), total = m.vis().length, nf = fCount();
+      if (cnt) cnt.textContent = (list.length === total ? `${total} ${c.noun}${total === 1 ? '' : 's'}` : `Showing ${list.length} of ${total} ${c.noun}s`) + (TB && nf ? ` · ${nf} filter${nf === 1 ? '' : 's'}` : '');
       tb.innerHTML = list.length ? list.map(r => `
         <tr data-id="${r.id}" class="border-b border-side-line last:border-b-0 hover:bg-side-hover cursor-pointer">
-          ${c.selectable ? `<td class="pl-4 pr-1 py-2" data-selcell><input type="checkbox" data-sel="${r.id}" ${sel.has(r.id) ? 'checked' : ''} aria-label="Select"></td>` : ''}
-          ${c.columns.map((x, i) => `<td class="${TD(i + (c.selectable ? 1 : 0), n)} ${x.cls === 'num' ? 'text-right tabular whitespace-nowrap' : ''}">${x.v(r)}</td>`).join('')}
+          ${S ? `<td class="pl-4 pr-1 py-2" data-selcell><input type="checkbox" data-sel="${r.id}" ${sel.has(r.id) ? 'checked' : ''} aria-label="Select"></td>` : ''}
+          ${cols.map((x, i) => `<td class="${TD(i + (S ? 1 : 0), n)} ${x.cls === 'num' ? 'text-right tabular whitespace-nowrap' : ''}">${x.v(r)}</td>`).join('')}
           <td class="${TD(n - 1, n)}"><div class="flex items-center gap-1.5">
             ${typeof c.rowExtra === 'function' ? c.rowExtra(r) : (c.rowExtra || '')}
             <button type="button" data-a="edit" class="${ICON_BTN}" title="Edit" aria-label="Edit">${UI_EDIT_ICON}</button>
@@ -1098,7 +1141,9 @@ function makeModule(c) {
       m.updSel();
     },
     updSel() {
-      if (!c.selectable || !view) return;
+      if (!canSel() || !view) return;
+      const bd = view.querySelector('[data-a="bulkdel"]');
+      if (bd) { bd.disabled = sel.size === 0; bd.querySelector('[data-n]').textContent = sel.size; }
       const bar = view.querySelector('[data-selbar]'); if (!bar) return;
       bar.classList.toggle('hidden', sel.size === 0);
       bar.innerHTML = sel.size ? `<span class="fs-head text-primary"><b>${sel.size}</b> selected</span>${typeof c.selActions === 'function' ? c.selActions() : (c.selActions || '')}<button type="button" class="${UI_BTN} ml-auto" data-a="selclear">Clear selection</button>` : '';
@@ -1124,10 +1169,104 @@ function makeModule(c) {
       m.render(); toast(c.msgDeleted ? c.msgDeleted(r) : r.code + ' deleted');
     },
     exportCsv() {
-      if (c.csv) { const f = c.csv(m.vis()); downloadFile(f.name, new Blob(['\ufeff' + f.text], { type:'text/csv' })); return; }
-      const cols = c.columns.filter(x => x.l), qt = s => `"${String(s).replace(/"/g, '""')}"`;
-      const out = [cols.map(x => qt(x.l)).join(',')].concat(m.vis().map(r => cols.map(x => qt(plain(x.v(r)))).join(',')));
+      const rows = TB ? m.list() : m.vis();
+      if (c.csv) { const f = c.csv(rows); downloadFile(f.name, new Blob(['﻿' + f.text], { type:'text/csv' })); if (TB) toast(`${rows.length} ${c.noun}${rows.length === 1 ? '' : 's'} exported.`); return; }
+      const cols = (TB ? shownCols() : c.columns).filter(x => x.l && x.print !== false), qt = s => `"${String(s).replace(/"/g, '""')}"`;
+      const txt = TB ? cellFlat : plain;
+      const out = [cols.map(x => qt(x.l)).join(',')].concat(rows.map(r => cols.map(x => qt(txt(x.v(r)))).join(',')));
       downloadFile(c.key + '-' + today() + '.csv', new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv' }));
+      if (TB) toast(`${rows.length} ${c.noun}${rows.length === 1 ? '' : 's'} exported.`);
+    },
+    /* ---------- Plan 10 toolbar: every list option on the list card ---------- */
+    renderTB() {
+      const actions = document.getElementById('page-actions');
+      if (actions) actions.innerHTML = typeof c.extra === 'function' ? c.extra() : (c.extra || '');
+      const stats = c.stats(m.vis()), S = canSel(), cols = shownCols(), ncol = cols.length + 1 + (S ? 1 : 0), nf = fCount(), nl = c.columns.filter(x => x.l).length;
+      view.innerHTML = `
+        ${typeof c.intro === 'function' ? c.intro() : (c.intro || '')}
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-${Math.min(stats.length, 6)} gap-3 mb-4">${stats.map(s => procKpiCard(s.l, s.v)).join('')}</div>
+        <section class="bg-cardBg border border-side-panel rounded-lg card-shadow">
+          <div class="flex flex-wrap items-center justify-between gap-3 p-4">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <span class="text-side-accent shrink-0">${iconSvg('list', 'w-4 h-4')}</span>
+              <div class="min-w-0">
+                <h3 class="fs-lead font-semibold text-primary">${escapeHtml(c.listTitle || (c.noun.charAt(0).toUpperCase() + c.noun.slice(1) + ' list'))}</h3>
+                <p class="text-helper text-muted mt-0.5" data-count></p>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" class="${UI_BTN}" data-a="print">${icon('printer')}Print</button>
+              <button type="button" class="${UI_BTN}" data-a="export">${icon('download')}Export CSV</button>
+              <button type="button" class="${UI_BTN_PRIMARY}" data-a="add">${UI_PLUS_ICON}${escapeHtml(c.addLabel)}</button>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-side-line">
+            <input type="search" data-a="q" value="${escapeHtml(q)}" placeholder="Search ${escapeHtml(c.noun)}s…" class="${UI_INPUT} flex-1 min-w-[220px] lg:max-w-[560px] !w-auto" aria-label="Search">
+            <button type="button" class="${UI_BTN}${nf ? ' !border-side-accent !text-side-accent' : ''}" data-a="filters" aria-haspopup="dialog">${icon('filter')}Filters${nf ? ` (${nf})` : ''}</button>
+            ${colToggle() ? `<button type="button" class="${UI_BTN}${hide.size ? ' !border-side-accent !text-side-accent' : ''}" data-a="columns" aria-haspopup="dialog">${icon('columns')}Columns${hide.size ? ` (${nl - hide.size}/${nl})` : ''}</button>` : ''}
+            ${active() ? `<button type="button" class="${UI_BTN} lg:ml-auto" data-a="reset">${UI_RESET_ICON}Reset filters</button>` : ''}
+            ${c.bulkDelete ? `<button type="button" class="${UI_BTN} ${active() ? '' : 'lg:ml-auto '}!text-danger hover:bg-dangerSoft disabled:opacity-50 disabled:cursor-not-allowed" data-a="bulkdel" disabled>${icon('trash')}<span>Delete selected (<span data-n>0</span>)</span></button>` : ''}
+          </div>
+          ${S ? `<div data-selbar class="hidden flex items-center gap-2 px-4 py-2 border-t border-side-line bg-side-active"></div>` : ''}
+          <div class="overflow-x-auto border-t border-side-line">
+            <table class="w-full ${c.minW || 'min-w-[900px]'}">
+              <thead><tr class="border-b border-side-line">
+                ${S ? `<th class="pl-4 pr-1 py-2.5 w-8"><input type="checkbox" data-selall aria-label="Select all"></th>` : ''}
+                ${cols.map((x, i) => `<th class="${TH(i + (S ? 1 : 0), ncol, x.cls === 'num' ? 'right' : 'left')}">${escapeHtml(x.l || '')}</th>`).join('')}
+                <th class="${TH(ncol - 1, ncol)}">Action</th>
+              </tr></thead>
+              <tbody data-rows></tbody>
+            </table>
+          </div>
+        </section>`;
+      m.rows();
+    },
+    filterPanel() {
+      const sum = r => { r.querySelector('[data-fsum]').textContent = `${m.list().length} of ${m.vis().length} ${c.noun}s match`; };
+      const draw = root => {
+        root.querySelector('[data-pbody]').innerHTML = fGroups().map(g => {
+          const cnt = {}; m.vis().forEach(r => { const v = String(r[g.k] ?? ''); if (v) cnt[v] = (cnt[v] || 0) + 1; });
+          const vals = (g.o || []).filter(v => g.k === 'status' || cnt[v] || (F[g.k] && F[g.k].has(v))).concat(Object.keys(cnt).filter(v => !(g.o || []).includes(v)).sort());
+          if (!vals.length && g.k !== 'status') return '';
+          return `<fieldset class="mb-4 last:mb-0"><legend class="fs-small font-semibold text-muted uppercase tracking-wide mb-1.5">${escapeHtml(g.l)}</legend>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">${vals.map(v => `<label class="flex items-center gap-2 h-8 px-2 rounded hover:bg-side-hover cursor-pointer fs-head text-primary"><input type="checkbox" data-fk="${escapeHtml(g.k)}" value="${escapeHtml(v)}" ${F[g.k] && F[g.k].has(v) ? 'checked' : ''}><span class="truncate">${escapeHtml(v)}</span><span class="ml-auto text-muted tabular">${cnt[v] || 0}</span></label>`).join('') || '<p class="fs-head text-muted">No values yet.</p>'}</div></fieldset>`;
+        }).join('');
+        sum(root);
+      };
+      const root = openPanel({ id:'catPFilters', title:'Filters', icon:'filter', width:'max-w-[560px]', body:'',
+        footer:`<span class="mr-auto fs-head text-muted" data-fsum></span><button type="button" class="${UI_BTN}" data-fclear>${UI_RESET_ICON}Clear all</button><button type="button" class="${UI_BTN_PRIMARY}" data-pclose>Done</button>`,
+        onChange:(e, r) => { const b = e.target.closest('[data-fk]'); if (!b) return; const k = b.dataset.fk; (F[k] = F[k] || new Set())[b.checked ? 'add' : 'delete'](b.value); if (!F[k].size) delete F[k]; m.render(); sum(r); },
+        onClick:(e, r) => { if (e.target.closest('[data-fclear]')) { F = {}; m.render(); draw(r); } } });
+      draw(root);
+    },
+    columnPanel() {
+      const labels = c.columns.filter(x => x.l).map(x => x.l);
+      const draw = root => { root.querySelector('[data-pbody]').innerHTML = `<p class="fs-head text-muted mb-2">Choose the columns to show in the table, Print and Export CSV.</p><div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">${labels.map(l => `<label class="flex items-center gap-2 h-8 px-2 rounded hover:bg-side-hover cursor-pointer fs-head text-primary"><input type="checkbox" data-col="${escapeHtml(l)}" ${hide.has(l) ? '' : 'checked'}>${escapeHtml(l)}</label>`).join('')}</div>`; };
+      const root = openPanel({ id:'catPColumns', title:'Columns', icon:'columns', width:'max-w-[480px]', body:'',
+        footer:`<button type="button" class="${UI_BTN} mr-auto" data-call>Show all</button><button type="button" class="${UI_BTN_PRIMARY}" data-pclose>Done</button>`,
+        onChange:e => { const b = e.target.closest('[data-col]'); if (!b) return; if (!b.checked && hide.size >= labels.length - 1) { b.checked = true; toast('Keep at least one column visible.', 'danger'); return; } b.checked ? hide.delete(b.dataset.col) : hide.add(b.dataset.col); m.render(); },
+        onClick:(e, r) => { if (e.target.closest('[data-call]')) { hide.clear(); m.render(); draw(r); } } });
+      draw(root);
+    },
+    reset() { q = ''; flt = ''; F = {}; hide.clear(); m.render(); toast('Filters reset.'); },
+    bulkDel() {
+      const rows = [...sel].map(id => DATA[c.key].find(x => x.id === id)).filter(Boolean); if (!rows.length) return;
+      const blocked = [], ok = [];
+      rows.forEach(r => { const why = c.canDelete ? c.canDelete(r) : ''; why ? blocked.push([r, why]) : ok.push(r); });
+      if (!ok.length) { toast(`None of the ${rows.length} selected can be deleted. ${blocked[0][0].code}: ${blocked[0][1]}`, 'danger'); return; }
+      const noted = c.deleteNote ? ok.filter(r => c.deleteNote(r)).length : 0, pl = n => `${n} ${c.noun}${n === 1 ? '' : 's'}`;
+      const msg = `Delete ${pl(ok.length)}? This cannot be undone.` + (blocked.length ? `\n\n${pl(blocked.length)} cannot be deleted and will be kept.` : '') + (noted ? `\n\n${pl(noted)} of them ${noted === 1 ? 'is' : 'are'} used in other records. Those records will keep the name.` : '');
+      if (!confirm(msg)) return;
+      const ids = new Set(ok.map(r => r.id));
+      DATA[c.key] = DATA[c.key].filter(x => !ids.has(x.id));
+      ok.forEach(r => { sel.delete(r.id); if (c.afterDelete) c.afterDelete(r); });
+      m.render();
+      toast(`${pl(ok.length)} deleted.` + (blocked.length ? ` ${blocked.length} could not be deleted (${blocked[0][0].code}: ${blocked[0][1]})` : ''), blocked.length ? 'danger' : undefined);
+    },
+    printList() {
+      const rows = m.list(), cols = shownCols().filter(x => x.l && x.print !== false);
+      const fl = Object.keys(F).map(k => `${(fGroups().find(g => g.k === k) || { l:k }).l}: ${[...F[k]].join(', ')}`).concat(q.trim() ? [`Search: "${q.trim()}"`] : []);
+      openListPrint({ title:c.title, noun:c.noun, filters:fl, cols:cols.map(x => ({ l:x.l, num:x.cls === 'num' })), rows:rows.map(r => cols.map(x => x.v(r))) });
     },
   };
   /* one delegated listener on #page-content and #page-actions while this module is on screen */
@@ -1144,6 +1283,11 @@ function makeModule(c) {
       if (c.onAction && c.onAction(act, id)) return true;
       if (act === 'add') m.open();
       else if (act === 'export') m.exportCsv();
+      else if (act === 'print') m.printList();
+      else if (act === 'filters') m.filterPanel();
+      else if (act === 'columns') m.columnPanel();
+      else if (act === 'reset') m.reset();
+      else if (act === 'bulkdel') m.bulkDel();
       else if (act === 'selclear') { sel.clear(); m.rows(); }
       else if (act === 'edit') m.open(id);
       else if (act === 'del') m.del(id);
@@ -1152,7 +1296,12 @@ function makeModule(c) {
     if (tr) { m.open(tr.dataset.id); return true; }
     return false;
   };
-  m.onInput = e => { if (e.target.dataset.a === 'q') { q = e.target.value; m.rows(); } };
+  m.onInput = e => {
+    if (e.target.dataset.a !== 'q') return;
+    const was = TB && active(); q = e.target.value;
+    if (TB && was !== active()) { const pos = e.target.selectionStart; m.render(); const i = view.querySelector('[data-a="q"]'); if (i) { i.focus(); try { i.setSelectionRange(pos, pos); } catch (err) { /* search inputs may not support it */ } } }
+    else m.rows();
+  };
   m.onChange = e => { if (e.target.dataset.a === 'flt') { flt = e.target.value; m.rows(); } };
   MODS[c.view || c.key] = m;
   return m;
@@ -1643,6 +1792,7 @@ makeModule({
   title:'Product Setup', subtitle:'Your product master list. Every product gets a ready-made catalog: click the eye icon to view, download or send it.',
   empty:'No products yet. Add your first product and its catalog is created automatically.',
   statusList:['Active','Inactive'],
+  toolbar:true, bulkDelete:true, filterKeys:['category', 'unit', 'incoterm', 'customization'],
   selectable:true,
   selActions:`<button type="button" class="${UI_BTN_PRIMARY}" data-a="mkcatalog">${icon('doc')}Create catalog from selected</button>`,
   extra:`<button type="button" class="${UI_BTN}" data-a="catlist">${icon('doc')}Saved catalogs</button>`,
@@ -1734,7 +1884,7 @@ makeModule({
     { l:'Margin', cls:'num', v:r => num(r.price) > 0 && r.cost !== '' ? margin(r) : '—' },
     { l:'Sourcing', v:r => { const sr = prodSrcOf(r.id); if (!sr) return '—'; const ch = (sr.quotes || []).find(x => x.selected), b = ch || bestQuote(sr); return b ? `${escapeHtml(b.supplier)}${subNote((ch ? 'Chosen' : 'Best') + ' ' + money(b.price))}` : chip(SRC_CLS[sr.status] || 'neutral', sr.status || 'Open'); } },
     { l:'Status', v:r => chip(STATUS_CLS[r.status], r.status) },
-    { l:'Catalog', v:r => { const ok = catalogReady(r); return `<button type="button" data-a="catalog" class="w-7 h-7 rounded border border-side-border flex items-center justify-center hover:bg-side-hover ${ok ? 'text-success' : 'text-warning'}" title="${ok ? 'View, download or send the catalog' : 'View catalog (add price and MOQ to complete it)'}" aria-label="View catalog">${icon('eye')}</button>`; } },
+    { l:'Catalog', print:false, v:r => { const ok = catalogReady(r); return `<button type="button" data-a="catalog" class="w-7 h-7 rounded border border-side-border flex items-center justify-center hover:bg-side-hover ${ok ? 'text-success' : 'text-warning'}" title="${ok ? 'View, download or send the catalog' : 'View catalog (add price and MOQ to complete it)'}" aria-label="View catalog">${icon('eye')}</button>`; } },
   ],
   stats: rows => [
     { l:'Total products', v:rows.length },
@@ -1754,6 +1904,7 @@ makeModule({
   title:'Sample Management', subtitle:'Track every sample from request to buyer approval.',
   empty:'No samples yet. Add a sample request to start tracking it.',
   statusList:['Requested','In Development','Ready','Sent','Approved','Rejected','Revision'],
+  toolbar:true, bulkDelete:true, filterKeys:['sampleType', 'courier'],
   blank: m => ({ id:uid(), code:m.nextCode(), productId:'', buyer:'', sampleType:'', qty:1, requestDate:today(), dueDate:'', sentDate:'', courier:'', awb:'', status:'Requested', remarks:'' }),
   fields:[
     { k:'productId', l:'Product', req:1, wide:1, t:'select', o:productOpts },
@@ -2667,6 +2818,7 @@ makeModule({
   },
   empty:'No buyer leads yet. Use "Add lead" on the Find page, or add one here.',
   statusList:['Lead','Contacted','Sample Sent','Quotation Sent','Negotiating','Won','Lost'],
+  toolbar:true, bulkDelete:true, filterKeys:['continent', 'country', 'source', 'interest'],
   blank: m => ({ id:uid(), code:m.nextCode(), assignedTo:isAdmin() ? '' : meEmail(), company:'', continent:'', country:'', contactName:'', designation:'', email:'', phone:'', website:'', profileUrl:'', source:'', status:'Lead', interest:'', nextFollowUp:'', notes:'',
                 activities:[{ date:today(), type:'Note', note:'' }] }),
   fields:[
@@ -3123,6 +3275,7 @@ makeModule({
   title:'Supplier List', subtitle:'Local and foreign suppliers with contacts, payment terms and purchase history.',
   empty:'No suppliers yet. Add your first supplier, then record local or import purchases against it.',
   statusList:['Active','Inactive','Blocked'],
+  toolbar:true, bulkDelete:true, filterKeys:['type', 'paymentTerms', 'rating'],
   rowExtra:`<button type="button" data-a="supprofile" class="${ICON_BTN}" title="Full profile: since when, business, ledger, running orders and due" aria-label="Full profile">${icon('eye')}</button>`,
   onAction:(act, id) => { if (act === 'supprofile') { openSupplierProfile(id); return true; } return false; },
   blank: m => ({ id:uid(), code:m.nextCode(), name:'', type:'Local', country:'Bangladesh', status:'Active' }),
@@ -3253,6 +3406,7 @@ makeModule({
   title:'Employee', subtitle:'Everyone who works with you: job details, salary structure, bank details and yearly leave.',
   empty:'No employees yet. Add your first employee to start attendance, leave and payroll.',
   statusList:['Active', 'Inactive', 'Resigned', 'Terminated'],
+  toolbar:true, filterKeys:['department', 'empType', 'designation'],
   blank: m => ({ id:uid(), code:m.nextCode(), name:'', designation:'', department:'', prodStage:'', empType:'Permanent', status:'Active', joinDate:today(), image:'', leaveCasual:10, leaveSick:14, leaveAnnual:12 }),
   fields:[
     {k:'h1', l:'Job details', t:'heading'},
@@ -3543,6 +3697,7 @@ makeModule({
   title:'Chart of Accounts', subtitle:'Accounts by category, summary and group with automatic account codes',
   empty:'No accounts found. Add an account or change your search filters.',
   statusList:['Active', 'Inactive'],
+  toolbar:true, filterKeys:['name', 'summary', 'bankCash'],
   sortFn:() => 0,
   searchExtra: r => r.bankName || '',
   intro:() => ppCardHTML(),
@@ -4056,6 +4211,7 @@ makeModule({
   title:'Leave Management', subtitle:'Leave requests with balances. Approved leave shows automatically in attendance and payroll.',
   empty:'No leave requests yet.',
   statusList:['Pending', 'Approved', 'Rejected', 'Cancelled'],
+  toolbar:true, bulkDelete:true, filterKeys:['leaveType', 'dayPart'],
   rowExtra:`<button type="button" data-a="lvok" class="${ICON_BTN}" title="Approve" aria-label="Approve">${icon('check')}</button><button type="button" data-a="lvno" class="${ICON_BTN_DEL}" title="Reject" aria-label="Reject">${icon('x')}</button>`,
   onAction:(act, id) => {
     if (act !== 'lvok' && act !== 'lvno') return false;
@@ -4176,6 +4332,7 @@ makeModule({
   title:'Buyer Purchase Orders (PO)', subtitle:'Purchase orders you receive from buyers. Send a proforma invoice, then turn the PO into an order.',
   empty:'No buyer purchase orders yet. Record the first PO you receive from a buyer.',
   statusList:['Received', 'Under Review', 'PI Sent', 'Confirmed', 'Converted to Order', 'Cancelled'],
+  toolbar:true, bulkDelete:true, filterKeys:['paymentTerms', 'incoterm'],
   rowExtra:`<button type="button" data-a="mkpi" class="${ICON_BTN}" title="Create a proforma invoice from this PO" aria-label="Create PI">${icon('file')}</button><button type="button" data-a="toorder" class="${ICON_BTN}" title="Convert this PO into an order" aria-label="Convert to order">${icon('box')}</button>`,
   onAction:(act, id) => {
     const po = DATA.buyerpos.find(x => x.id === id);
@@ -4320,6 +4477,7 @@ makeModule({
   title:'Proforma Invoice (PI)', subtitle:'Proforma invoices for buyers. View, print and send from the eye icon.',
   empty:'No proforma invoices yet. Create one here, or use "Create PI" on a buyer PO.',
   statusList:['Draft', 'Sent', 'Accepted', 'Expired', 'Cancelled'],
+  toolbar:true, filterKeys:['currency', 'paymentTerms', 'incoterm', 'transport'],
   rowExtra:`<button type="button" data-a="viewpi" class="${ICON_BTN}" title="View, print or send this invoice" aria-label="View invoice">${icon('eye')}</button>`,
   onAction:(act, id) => { if (act === 'viewpi') { openPI(id); return true; } return false; },
   blank: m => ({ id:uid(), code:m.nextCode(), buyerPoNo:'', buyer:'', buyerEmail:'', buyerAddress:'', buyerBank:'', lcNo:'', buyerContact:'', currency:co.currency || 'USD', destCountry:'', portDischarge:'',
@@ -4695,6 +4853,7 @@ makeModule({
   title:'Local Purchase', subtitle:'Purchases from suppliers in your own country, with invoice, PI / Back-to-Back L/C and payment tracking.',
   empty:'No local purchases yet. Record a purchase from a local supplier.',
   statusList:['Unpaid', 'Money Released', 'Partially Paid', 'Paid', 'Cancelled'],
+  toolbar:true, bulkDelete:true, filterKeys:['paymentMethod'],
   rowExtra: r => recvBtn(r) + (isBtbPay(r) ? relBtn(r) : `<button type="button" data-a="paid" class="${ICON_BTN}" title="Mark as fully paid" aria-label="Mark paid">${icon('check')}</button>`),
   onAction:(act, id) => {
     if (act === 'grn') { openGRN('localpurchase', id); return true; }
@@ -4763,6 +4922,7 @@ makeModule({
   title:'Import Purchase', subtitle:'Goods bought from foreign suppliers: shipment, PI / Back-to-Back L/C, LC/TT and the full landed cost.',
   empty:'No import purchases yet. Record a shipment from a foreign supplier.',
   statusList:['Ordered', 'Shipped', 'In Transit', 'At Customs', 'Received', 'Cancelled'],
+  toolbar:true, bulkDelete:true, filterKeys:['shipMode', 'paymentMethod'],
   rowExtra: r => (isBtbPay(r) ? relBtn(r) : '') + recvBtn(r),
   onAction:(act, id) => { if (act === 'rel') { releaseMoney('importpurchase', id); return true; } if (act !== 'grn') return false; openGRN('importpurchase', id); return true; },
   canDelete: r => purchaseCanDelete(r) || invCanDelete(r), afterSave: row => { purchaseAfterSave('importpurchase', row); invAfterSave('importpurchase', row); }, afterDelete: purchaseAfterDelete, onField:(r, k) => btbOnField(r, k, true),
@@ -5316,35 +5476,87 @@ function invAfterSave(key, row) { if (!row.askGrn) return; row.askGrn = false; s
 /* ---------- the generic inventory list screen (ref invPage 15833) ---------- */
 function invPage(cfg) {
   let q = '', f1 = '', f2 = '', view = null;
+  const hide = new Set();
+  const nf = () => (f1 ? 1 : 0) + (f2 ? 1 : 0), active = () => !!(q.trim() || nf() || hide.size);
+  const idx = () => cfg.cols.map((c, i) => i).filter(i => !hide.has(cfg.cols[i][0]));
+  const slug = cfg.csv || String(cfg.title || 'list').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const noCsv = h => String(h || '').replace(/<button[^>]*data-g="csv"[^>]*>[\s\S]*?<\/button>/, '');
   const m = {
     isInv:true,
     render(container) {
       if (container) view = container;
       if (!view || !document.body.contains(view)) return;
       if (cfg.before) cfg.before();
-      const act = document.getElementById('page-actions'); if (act) act.innerHTML = cfg.acts || '';
-      const stats = cfg.stats();
+      const act = document.getElementById('page-actions'); if (act) act.innerHTML = noCsv(cfg.acts);
+      const stats = cfg.stats(), ix = idx(), n = ix.length + 1, nl = cfg.cols.length;
       view.innerHTML = `<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-${Math.min(stats.length, 6)} gap-3 mb-4">${stats.map(s => procKpiCard(s.l, s.v)).join('')}</div>
         <section class="bg-cardBg border border-side-panel rounded-lg card-shadow">
           <div class="flex flex-wrap items-center justify-between gap-3 p-4"><div class="flex items-center gap-2.5 min-w-0"><span class="text-side-accent shrink-0">${iconSvg(cfg.icon || 'list', 'w-4 h-4')}</span><div class="min-w-0"><h3 class="fs-lead font-semibold text-primary">${escapeHtml(cfg.listTitle || cfg.title)}</h3><p class="text-helper text-muted mt-0.5" id="ipCount"></p></div></div>
-            <div class="flex flex-wrap items-center gap-2"><input data-q type="search" placeholder="${escapeHtml(cfg.ph)}" value="${escapeHtml(q)}" aria-label="Search" class="${UI_INPUT} w-[240px]">
-              ${cfg.f1 ? `<select data-f1 class="${UI_INPUT} w-auto">${cfg.f1().map(o => `<option value="${escapeHtml(o[0])}" ${f1 === o[0] ? 'selected' : ''}>${escapeHtml(o[1])}</option>`).join('')}</select>` : ''}
-              ${cfg.f2 ? `<select data-f2 class="${UI_INPUT} w-auto">${cfg.f2().map(o => `<option value="${escapeHtml(o[0])}" ${f2 === o[0] ? 'selected' : ''}>${escapeHtml(o[1])}</option>`).join('')}</select>` : ''}</div></div>
-          <div class="overflow-x-auto border-t border-side-line"><table class="w-full min-w-[820px]"><thead><tr class="border-b border-side-line">${cfg.cols.map((c, i) => `<th class="${TH(i, cfg.cols.length + 1, c[1] === 'num' ? 'right' : 'left')}">${c[0]}</th>`).join('')}<th class="${TH(cfg.cols.length, cfg.cols.length + 1)}"></th></tr></thead><tbody id="ipTb"></tbody></table></div></section>
+            <div class="flex flex-wrap items-center gap-2"><button type="button" class="${UI_BTN}" data-a="print">${icon('printer')}Print</button><button type="button" class="${UI_BTN}" data-a="export">${icon('download')}Export CSV</button></div></div>
+          <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-side-line">
+            <input data-q type="search" placeholder="${escapeHtml(cfg.ph)}" value="${escapeHtml(q)}" aria-label="Search" class="${UI_INPUT} flex-1 min-w-[220px] lg:max-w-[560px] !w-auto">
+            ${cfg.f1 || cfg.f2 ? `<button type="button" class="${UI_BTN}${nf() ? ' !border-side-accent !text-side-accent' : ''}" data-a="filters" aria-haspopup="dialog">${icon('filter')}Filters${nf() ? ` (${nf()})` : ''}</button>` : ''}
+            <button type="button" class="${UI_BTN}${hide.size ? ' !border-side-accent !text-side-accent' : ''}" data-a="columns" aria-haspopup="dialog">${icon('columns')}Columns${hide.size ? ` (${nl - hide.size}/${nl})` : ''}</button>
+            ${active() ? `<button type="button" class="${UI_BTN} lg:ml-auto" data-a="reset">${UI_RESET_ICON}Reset filters</button>` : ''}</div>
+          <div class="overflow-x-auto border-t border-side-line"><table class="w-full min-w-[820px]"><thead><tr class="border-b border-side-line">${ix.map((i, k) => `<th class="${TH(k, n, cfg.cols[i][1] === 'num' ? 'right' : 'left')}">${cfg.cols[i][0]}</th>`).join('')}<th class="${TH(n - 1, n)}"></th></tr></thead><tbody id="ipTb"></tbody></table></div></section>
         ${cfg.extra ? '<div id="ipEx" class="mt-4"></div>' : ''}`;
       m.rows();
     },
     rows() {
       const tb = document.getElementById('ipTb'); if (!tb) return;
-      const list = cfg.list(q.trim().toLowerCase(), f1, f2), n = cfg.cols.length + 1;
-      tb.innerHTML = list.length ? list.map(r => { const cells = cfg.row(r); return `<tr class="border-b border-side-line last:border-b-0 hover:bg-side-hover">${cells.map((c, i) => `<td class="${TD(i, n)}${cfg.cols[i] && cfg.cols[i][1] === 'num' ? ' text-right tabular whitespace-nowrap' : ''}">${c}</td>`).join('')}<td class="${TD(n - 1, n)}"><div class="flex items-center justify-end gap-1.5">${cfg.actions ? cfg.actions(r) : ''}</div></td></tr>`; }).join('')
+      const list = cfg.list(q.trim().toLowerCase(), f1, f2), ix = idx(), n = ix.length + 1;
+      tb.innerHTML = list.length ? list.map(r => { const cells = cfg.row(r); return `<tr class="border-b border-side-line last:border-b-0 hover:bg-side-hover">${ix.map((i, k) => `<td class="${TD(k, n)}${cfg.cols[i] && cfg.cols[i][1] === 'num' ? ' text-right tabular whitespace-nowrap' : ''}">${cells[i]}</td>`).join('')}<td class="${TD(n - 1, n)}"><div class="flex items-center justify-end gap-1.5">${cfg.actions ? cfg.actions(r) : ''}</div></td></tr>`; }).join('')
         : `<tr><td colspan="${n}" class="px-4 py-10 text-center text-body text-muted">${cfg.empty}</td></tr>`;
-      const cnt = document.getElementById('ipCount'); if (cnt) cnt.textContent = `${list.length} row${list.length === 1 ? '' : 's'}`;
+      const cnt = document.getElementById('ipCount'); if (cnt) cnt.textContent = `${list.length} row${list.length === 1 ? '' : 's'}` + (nf() ? ` · ${nf()} filter${nf() === 1 ? '' : 's'}` : '');
       if (cfg.extra) { const ex = document.getElementById('ipEx'); if (ex) ex.innerHTML = cfg.extra(q.trim().toLowerCase(), f1, f2); }
     },
-    onInput(e) { if (e.target.dataset.q !== undefined) { q = e.target.value; m.rows(); } },
-    onChange(e) { if (e.target.dataset.f1 !== undefined) { f1 = e.target.value; m.rows(); } else if (e.target.dataset.f2 !== undefined) { f2 = e.target.value; m.rows(); } },
+    /* rows as plain data for Print and Export CSV: filtered, visible columns only */
+    table() {
+      const ix = idx(), list = cfg.list(q.trim().toLowerCase(), f1, f2);
+      return { cols:ix.map(i => ({ l:plain(cfg.cols[i][0]), num:cfg.cols[i][1] === 'num' })), rows:list.map(r => { const cells = cfg.row(r); return ix.map(i => cells[i]); } ), n:list.length };
+    },
+    filterSummary() {
+      const out = []; const lab = (f, v, l) => { if (!v) return; const o = f().find(x => x[0] === v); out.push(`${l}: ${o ? o[1] : v}`); };
+      if (cfg.f1) lab(cfg.f1, f1, cfg.f1l || 'Filter'); if (cfg.f2) lab(cfg.f2, f2, cfg.f2l || 'Filter 2'); if (q.trim()) out.push(`Search: "${q.trim()}"`); return out;
+    },
+    exportCsv() {
+      const t = m.table(), qt = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+      downloadFile(slug + '-' + today() + '.csv', new Blob(['﻿' + [t.cols.map(c => qt(c.l)), ...t.rows.map(r => r.map(h => qt(cellFlat(h))))].map(r => r.join(',')).join('\r\n')], { type:'text/csv' }));
+      toast(`CSV exported · ${t.n} row${t.n === 1 ? '' : 's'}.`);
+    },
+    printList() { const t = m.table(); openListPrint({ title:cfg.title, noun:'row', filters:m.filterSummary(), cols:t.cols, rows:t.rows }); },
+    filterPanel() {
+      const sel = (k, f, v, l) => `<label class="block mb-3 last:mb-0"><span class="block fs-small font-semibold text-muted uppercase tracking-wide mb-1.5">${escapeHtml(l)}</span><select data-${k} class="${UI_INPUT}">${f().map(o => `<option value="${escapeHtml(o[0])}" ${v === o[0] ? 'selected' : ''}>${escapeHtml(o[1])}</option>`).join('')}</select></label>`;
+      const body = () => (cfg.f1 ? sel('f1', cfg.f1, f1, cfg.f1l || 'Filter') : '') + (cfg.f2 ? sel('f2', cfg.f2, f2, cfg.f2l || 'Filter 2') : '');
+      openPanel({ id:'catPFilters', title:'Filters', icon:'filter', width:'max-w-[480px]', body:body(),
+        footer:`<button type="button" class="${UI_BTN} mr-auto" data-fclear>${UI_RESET_ICON}Clear all</button><button type="button" class="${UI_BTN_PRIMARY}" data-pclose>Done</button>`,
+        onChange:e => { if (e.target.dataset.f1 !== undefined) f1 = e.target.value; else if (e.target.dataset.f2 !== undefined) f2 = e.target.value; else return; m.render(); },
+        onClick:(e, r) => { if (e.target.closest('[data-fclear]')) { f1 = ''; f2 = ''; m.render(); r.querySelector('[data-pbody]').innerHTML = body(); } } });
+    },
+    columnPanel() {
+      const labels = cfg.cols.map(c => c[0]);
+      const draw = root => { root.querySelector('[data-pbody]').innerHTML = `<p class="fs-head text-muted mb-2">Choose the columns to show in the table, Print and Export CSV.</p><div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">${labels.map(l => `<label class="flex items-center gap-2 h-8 px-2 rounded hover:bg-side-hover cursor-pointer fs-head text-primary"><input type="checkbox" data-col="${escapeHtml(l)}" ${hide.has(l) ? '' : 'checked'}>${escapeHtml(plain(l))}</label>`).join('')}</div>`; };
+      const root = openPanel({ id:'catPColumns', title:'Columns', icon:'columns', width:'max-w-[480px]', body:'',
+        footer:`<button type="button" class="${UI_BTN} mr-auto" data-call>Show all</button><button type="button" class="${UI_BTN_PRIMARY}" data-pclose>Done</button>`,
+        onChange:e => { const b = e.target.closest('[data-col]'); if (!b) return; if (!b.checked && hide.size >= labels.length - 1) { b.checked = true; toast('Keep at least one column visible.', 'danger'); return; } b.checked ? hide.delete(b.dataset.col) : hide.add(b.dataset.col); m.render(); },
+        onClick:(e, r) => { if (e.target.closest('[data-call]')) { hide.clear(); m.render(); draw(r); } } });
+      draw(root);
+    },
+    onInput(e) {
+      if (e.target.dataset.q === undefined) return;
+      const was = active(); q = e.target.value;
+      if (was !== active()) { const pos = e.target.selectionStart; m.render(); const i = view.querySelector('[data-q]'); if (i) { i.focus(); try { i.setSelectionRange(pos, pos); } catch (err) { /* search inputs may not support it */ } } }
+      else m.rows();
+    },
+    onChange() {},
     onClick(e) {
+      const a = e.target.closest('[data-a]');
+      if (a) {
+        const act = a.dataset.a;
+        if (act === 'print') m.printList(); else if (act === 'export') m.exportCsv(); else if (act === 'filters') m.filterPanel(); else if (act === 'columns') m.columnPanel();
+        else if (act === 'reset') { q = ''; f1 = ''; f2 = ''; hide.clear(); m.render(); toast('Filters reset.'); }
+        return true;
+      }
       const b = e.target.closest('[data-g]'); if (!b) return false;
       cfg.act && cfg.act(b.dataset.g, b.dataset.id, b, m, v => { f1 = v; });
       return true;
@@ -5470,6 +5682,7 @@ function grnPrint(id) {
 const GRN_SCREEN = invPage({
   title:'Goods Receive (GRN)', listTitle:'Goods Receive Notes', icon:'box', ph:'Search GRN, purchase, supplier…',
   stats:() => { const a = awaiting(); return [{ l:'Awaiting receipt', v:a.filter(x => invGot(x.r) <= 0).length }, { l:'Partially received', v:a.filter(x => invGot(x.r) > 0).length }, { l:'GRNs issued', v:DATA.grns.length }, { l:'Units received', v:fmtQ(DATA.grns.reduce((s, g) => s + g.items.reduce((t, i) => t + num(i.received), 0), 0)) }]; },
+  f1l:'Source',
   f1:() => [['', 'Local + Import'], ['localpurchase', 'Local purchase'], ['importpurchase', 'Import purchase']],
   cols:[['GRN'], ['Date'], ['Source'], ['Purchase'], ['Supplier'], ['Goods'], ['Qty', 'num'], ['Note']],
   empty:'No Goods Receive Notes yet. Use “Receive” on a purchase below.',
@@ -6273,6 +6486,7 @@ function stockPage(loc, cfg) {
     before:() => { if (typeof packingSync === 'function') packingSync(); },
     acts:`<button type="button" class="${UI_BTN}" data-g="csv">Export CSV</button><button type="button" class="${UI_BTN_PRIMARY}" data-g="adj">${UI_PLUS_ICON}Adjust stock</button>`,
     stats:() => { const r = stockRows(loc); return [{ l:'Product / PI lines', v:r.length }, { l:'Units on hand', v:fmtQ(r.filter(x => x.hand > 0).reduce((s, x) => s + x.hand, 0)) }, { l:'Out of stock', v:r.filter(x => x.hand >= -0.0005 && x.hand <= 0.0005).length }, { l:'Negative stock', v:r.filter(x => x.hand < -0.0005).length }, { l:'Negative stock allowed', v:invAllowNeg() ? 'Yes' : 'No' }]; },
+    f1l:'Stock status',
     f1:() => [['', 'All stock'], ['In stock', 'In stock'], ['Out of stock', 'Out of stock'], ['Negative', 'Negative']],
     cols:[['Code'], ['Product'], ['PI'], [cfg.inL, 'num'], [cfg.outL, 'num'], ['On hand', 'num'], ['Last movement'], ['Status']],
     list:(q, f1) => stockRows(loc).filter(r => (!f1 || stkState(r) === f1) && (!q || q.split(/[,;|]/).map(s => s.trim()).filter(Boolean).some(t => (r.code + ' ' + r.name + ' ' + r.pi).toLowerCase().includes(t)))).sort((a, b) => a.name.localeCompare(b.name) || a.pi.localeCompare(b.pi)),
@@ -6329,6 +6543,7 @@ const DYE_SCREEN = invPage({
   title:'Dyeing', listTitle:'Dyeing records', icon:'flask', ph:'Search code, product, PI, party…',
   acts:`<button type="button" class="${UI_BTN}" data-g="recv">${icon('arrowRight')}Receive from dyeing</button><button type="button" class="${UI_BTN_PRIMARY}" data-g="send">${UI_PLUS_ICON}Send for dyeing</button>`,
   stats:() => [{ l:'Sent for dyeing', v:fmtQ(DATA.dyeings.filter(d => d.type === 'send').reduce((s, d) => s + num(d.qty), 0)) }, { l:'Received back', v:fmtQ(DATA.dyeings.filter(d => d.type === 'receive').reduce((s, d) => s + num(d.qty), 0)) }, { l:'At dyeing house now', v:sumLoc('dye') }, { l:'Dyed stock ready', v:sumLoc('dyed') }],
+  f1l:'Type',
   f1:() => [['', 'Sent + Received'], ['send', 'Sent'], ['receive', 'Received']],
   cols:[['Ref.'], ['Date'], ['Type'], ['PI'], ['Material'], ['Dyeing house'], ['Color'], ['Qty', 'num'], ['Note']],
   empty:'No dyeing records yet. Use “Send for dyeing” when raw material leaves for colour.',
@@ -6372,6 +6587,7 @@ const TRF_SCREEN = invPage({
   title:'Transfer', listTitle:'Transfers', icon:'truck', ph:'Search code, product, PI…',
   acts:`<button type="button" class="${UI_BTN_PRIMARY}" data-g="new">${UI_PLUS_ICON}New transfer</button>`,
   stats:() => [{ l:'Transfers', v:DATA.transfers.length }, { l:'Qty transferred', v:fmtQ(DATA.transfers.reduce((s, t) => s + num(t.qty), 0)) }, { l:'Dyed stock waiting', v:sumLoc('dyed') }, { l:'Raw material in production', v:sumLoc('prod') }],
+  f1l:'Transfer from',
   f1:() => [['', 'All transfers'], ['dyed', 'From dyed stock'], ['raw', 'From raw stock']],
   cols:[['Ref.'], ['Date'], ['From'], ['To'], ['PI'], ['Material'], ['Qty', 'num'], ['Remarks']],
   empty:'No transfers yet. Use “New transfer” to send dyed material to Production.',
@@ -6395,6 +6611,7 @@ const LEDGER_SCREEN = invPage({
   before:() => { if (INVL.prod) { LEDGER_SCREEN.setF1(INVL.prod); INVL.prod = ''; } if (typeof packingSync === 'function') packingSync(); },
   acts:`<button type="button" class="${UI_BTN}" data-g="csv">Export CSV</button>`,
   stats:() => [{ l:'Movements', v:DATA.invmoves.length }, { l:'Goods received (GRN)', v:mvSum('GRN', 1) }, { l:'Sent to dyeing', v:mvSum('DYE_OUT', 1) }, { l:'Transferred to production', v:mvSum('TRANSFER', 1) }, { l:'Delivered from production', v:mvSum('PRODIN', 1) }, { l:'Packed out', v:mvSum('PACKING', -1) }],
+  f1l:'Product', f2l:'Movement type',
   f1:() => [['', 'All products']].concat([...new Set(DATA.invmoves.map(m => m.productId))].map(pid => [pid, invPName(pid, (DATA.invmoves.find(m => m.productId === pid) || {}).productName)]).sort((a, b) => a[1].localeCompare(b[1]))),
   f2:() => [['', 'All types']].concat(Object.keys(MOVE_NAME).map(k => [k, MOVE_NAME[k]])),
   cols:[['Date'], ['Type'], ['Location'], ['Reference'], ['Product'], ['PI'], ['In', 'num'], ['Out', 'num'], ['Note']],
@@ -8041,6 +8258,7 @@ const LEFT_SCREEN = invPage({
   title:'Leftover stock', listTitle:'Failed quantity', icon:'clipboard', ph:'Search style, order, PI, lot, stage…',
   acts:`<button type="button" class="${UI_BTN}" data-g="csv">Export CSV</button><button type="button" class="${UI_BTN_PRIMARY}" data-g="qc">${icon('arrowRight')}Open Quality Control</button>`,
   stats:() => { const r = leftRows(); return [{ l:'Failed qty (leftover)', v:fmtQ(r.reduce((s, x) => s + x.failed, 0)) }, { l:'Inspections with failures', v:r.length }, { l:'Rework qty', v:fmtQ(r.reduce((s, x) => s + num(x.rework), 0)) }, { l:'Rejected qty', v:fmtQ(r.reduce((s, x) => s + num(x.rejected), 0)) }]; },
+  f1l:'Stage', f2l:'Disposition',
   f1:() => [['', 'All stages']].concat([...new Set(leftRows().map(r => r.stage).filter(Boolean))].map(x => [x, x])),
   f2:() => [['', 'All dispositions'], ['Accepted', 'Accepted'], ['Rework required', 'Rework required'], ['Rejected', 'Rejected'], ['On hold', 'On hold']],
   cols:[['Date'], ['Stage'], ['PI'], ['Style'], ['Order'], ['Lot / Batch'], ['Inspection'], ['Inspected', 'num'], ['Passed', 'num'], ['Failed (leftover)', 'num'], ['Rework', 'num'], ['Rejected', 'num'], ['Disposition']],
@@ -8292,6 +8510,7 @@ makeModule({
   title:'Buyer Login', subtitle:'Give your buyers a login to see your certificates, their orders and orders in processing.',
   empty:'No buyer accounts yet. Add one, then click the eye icon to preview what that buyer sees.',
   statusList:['Active', 'Disabled'],
+  toolbar:true, filterKeys:['showAmounts'],
   extra:`<button type="button" class="${UI_BTN}" data-a="portal">${icon('users')}Open buyer portal</button>`,
   rowExtra:`<button type="button" data-a="preview" class="${ICON_BTN}" title="Preview the portal as this buyer" aria-label="Preview portal">${icon('eye')}</button>`,
   onAction:(act, id) => { if (act === 'portal') { openPortal(''); return true; } if (act === 'preview') { openPortal(id); return true; } return false; },
@@ -8385,6 +8604,7 @@ const BUYERLIST_SCREEN = invPage({
   title:'Buyer List', listTitle:'Buyers', icon:'users', ph:'Search buyer, country, contact…',
   acts:`<button type="button" class="${UI_BTN}" data-g="csv">Export CSV</button><button type="button" class="${UI_BTN_PRIMARY}" data-g="add">${UI_PLUS_ICON}Add buyer (CRM)</button>`,
   stats:() => { const r = buyerRows(); return [{ l:'Buyers', v:r.length }, { l:'Total business', v:money(r.reduce((s, x) => s + x.S.business, 0)) }, { l:'Payment received', v:money(r.reduce((s, x) => s + x.S.paid, 0)) }, { l:'Total running due', v:money(r.reduce((s, x) => s + x.S.due, 0)) }, { l:'Running orders', v:r.reduce((s, x) => s + x.S.running.length, 0) }]; },
+  f1l:'Show',
   f1:() => [['', 'All buyers'], ['due', 'With due'], ['running', 'With running orders'], ['active', 'Did business'], ['none', 'No business yet']],
   cols:[['Buyer'], ['Country'], ['Listed since'], ['Times', 'num'], ['Total business', 'num'], ['Received', 'num'], ['Running due', 'num'], ['Running orders', 'num'], ['Last deal'], ['Stage'], ['Login ID'], ['Password']],
   empty:'No buyers yet. Add buyers in the CRM (Find → CRM), or create a PI or order for a buyer.',
